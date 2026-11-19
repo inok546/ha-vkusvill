@@ -57,6 +57,7 @@
   "entity": {
     "sensor": {
       "order_status": {"name": "Статус заказа"},
+      "order_card_status": {"name": "Статус для карточки заказа"},
       "order_stage": {
         "name": "Стадия заказа",
         "state": {

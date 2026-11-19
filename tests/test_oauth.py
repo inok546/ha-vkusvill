@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import logging
 from dataclasses import asdict
 from secrets import token_urlsafe
 from urllib.parse import parse_qs, urlencode, urlsplit
@@ -106,8 +107,9 @@ async def test_discovery_falls_back_to_origin_metadata(hass, wire):
 
 
 async def test_concurrent_refresh_commits_pair_and_guards_stale_restart(
-    hass, entry, entry_data, wire, oauth_response
+    hass, entry, entry_data, wire, oauth_response, caplog
 ):
+    caplog.set_level(logging.DEBUG, logger="custom_components.vkusvill")
     manager = TokenManager(hass, entry, http_client(hass))
     before = entry_data[CONF_TOKEN]
     wire.discovery()
@@ -138,6 +140,14 @@ async def test_concurrent_refresh_commits_pair_and_guards_stale_restart(
     wire.json("POST", TOKEN_URL, second_response)
     latest = await manager.get(rejected=tokens[0])
     assert latest.rotation == 2
+    assert caplog.text.count("VkusVill OAuth refresh saved") == 2
+    for secret in (
+        before["refresh_token"],
+        latest.refresh_token,
+        latest.access_token,
+        entry_data["client_secret"],
+    ):
+        assert secret not in caplog.text
     await manager.close()
     # New manager can load the committed generation after a restart.
     assert await TokenManager(hass, entry, http_client(hass)).get() == latest

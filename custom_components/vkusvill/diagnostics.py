@@ -7,6 +7,7 @@ from homeassistant.core import HomeAssistant
 
 from .const import VERSION
 from .coordinator import VkusVillConfigEntry
+from .models import Stage
 
 
 async def async_get_config_entry_diagnostics(
@@ -28,5 +29,11 @@ async def async_get_config_entry_diagnostics(
             ),
             orders_count=len(snapshot.history.orders),
             pagination_complete=snapshot.history.complete,
+            selected_stage=snapshot.selected.stage.value
+            if snapshot.selected
+            else Stage.UNKNOWN.value,
+            raw_status_present=bool(snapshot.selected and snapshot.selected.status_name),
+            order_card_has_status=coordinator.last_update_success
+            and coordinator.card_status is not None,
         )
     return result

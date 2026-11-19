@@ -10,6 +10,7 @@ from .const import DOMAIN
 from .coordinator import VkusVillConfigEntry, VkusVillCoordinator
 from .http import Cooldown, HttpClient
 from .oauth import TokenManager, refresh_journal
+from .order_card import card_store
 
 PLATFORMS = (Platform.SENSOR, Platform.BINARY_SENSOR)
 COOLDOWN: HassKey[Cooldown] = HassKey(f"{DOMAIN}.cooldown")
@@ -38,5 +39,6 @@ async def async_unload_entry(hass: HomeAssistant, entry: VkusVillConfigEntry) ->
 
 
 async def async_remove_entry(hass: HomeAssistant, entry: VkusVillConfigEntry) -> None:
-    """Remove the entry's non-secret refresh journal."""
+    """Remove the entry's integration storage."""
     await refresh_journal(hass, entry).async_remove()
+    await card_store(hass, entry).async_remove()

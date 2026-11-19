@@ -1,6 +1,6 @@
 """Order models and evidence-based status selection."""
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
@@ -85,16 +85,21 @@ def _sort_key(order: Order) -> tuple[float, str, str]:
     )
 
 
+def newest_order(orders: Iterable[Order]) -> Order | None:
+    """Choose the newest order with deterministic tie-breaking."""
+    return max(orders, key=_sort_key, default=None)
+
+
 def select_orders(history: OrderHistory, fetched_at: datetime) -> OrderSnapshot:
     """Prefer the newest verified active order, falling back to history."""
     orders = history.orders
-    active = max((order for order in orders if order.stage in ACTIVE), key=_sort_key, default=None)
+    active = newest_order(order for order in orders if order.stage in ACTIVE)
     has_active = None
     if active is not None:
         has_active = True
     elif history.complete and orders and all(order.stage in TERMINAL for order in orders):
         has_active = False
-    latest = max(orders, key=_sort_key, default=None)
+    latest = newest_order(orders)
     return OrderSnapshot(
         history=history,
         selected=active or latest,

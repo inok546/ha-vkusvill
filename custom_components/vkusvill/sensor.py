@@ -11,6 +11,7 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from .coordinator import VkusVillConfigEntry
 from .entity import VkusVillEntity
 from .models import OrderSnapshot, Stage
+from .order_card import CardStatus
 
 
 async def async_setup_entry(
@@ -26,6 +27,7 @@ async def async_setup_entry(
                 SensorEntityDescription(key="order_status", icon="mdi:receipt-text"),
                 lambda data: data.selected.status_name if data.selected else None,
             ),
+            VkusVillOrderCardSensor(entry),
             VkusVillSensor(
                 entry,
                 SensorEntityDescription(
@@ -63,6 +65,21 @@ async def async_setup_entry(
             ),
         ]
     )
+
+
+class VkusVillOrderCardSensor(VkusVillEntity, SensorEntity):
+    """Expose the raw status while the order card should be visible."""
+
+    _attr_icon = "mdi:receipt-text"
+
+    def __init__(self, entry: VkusVillConfigEntry) -> None:
+        super().__init__(entry, "sensor", "order_card_status")
+
+    @property
+    def native_value(self) -> str | None:
+        """Return the card text, if an order is in its display window."""
+        card: CardStatus | None = self.coordinator.card_status
+        return card.text if card else None
 
 
 class VkusVillSensor(VkusVillEntity, SensorEntity):

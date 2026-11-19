@@ -1,6 +1,7 @@
 """VkusVill OAuth discovery, manual callback, and serialized refresh."""
 
 import asyncio
+import logging
 import re
 from base64 import urlsafe_b64encode
 from dataclasses import asdict, dataclass, replace
@@ -26,6 +27,8 @@ from .const import (
     REQUESTED_SCOPE,
 )
 from .http import AccessDenied, AuthError, ConnectionError, HttpClient, ProtocolError, RateLimited
+
+_LOGGER = logging.getLogger(__name__)
 
 AUTHORIZE_URL = f"{OAUTH_ORIGIN}/oauth2/auth"
 TOKEN_URL = f"{OAUTH_ORIGIN}/oauth2/token"
@@ -275,6 +278,7 @@ class TokenManager:
             raise ProtocolError("Home Assistant is stopping")
         await self._save_marker({"grant_id": token.grant_id, "rotation": token.rotation})
         self.blocked = True
+        _LOGGER.debug("Starting VkusVill OAuth refresh")
         try:
             rotated = await _token_request(
                 self.http,
@@ -306,6 +310,7 @@ class TokenManager:
             self.hass.config_entries.async_update_entry(
                 self.entry, data={**self.entry.data, CONF_TOKEN: asdict(rotated)}
             )
+            _LOGGER.debug("VkusVill OAuth refresh saved")
         self.blocked = False
         return rotated
 

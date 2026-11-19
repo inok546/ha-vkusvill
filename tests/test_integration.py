@@ -1,7 +1,9 @@
 """Use real Home Assistant config flows, coordinator, and entity registry."""
 
 import json
+import logging
 from base64 import urlsafe_b64encode
+from datetime import timedelta
 from hashlib import sha256
 from secrets import token_urlsafe
 from urllib.parse import parse_qs, urlencode, urlsplit
@@ -11,6 +13,7 @@ from homeassistant.config_entries import SOURCE_REAUTH, SOURCE_USER, ConfigEntry
 from homeassistant.const import STATE_UNAVAILABLE, STATE_UNKNOWN
 from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.helpers import entity_registry as er
+from pytest_homeassistant_custom_component.common import async_fire_time_changed_exact
 
 from custom_components.vkusvill import models
 from custom_components.vkusvill.const import (
@@ -23,9 +26,11 @@ from custom_components.vkusvill.const import (
 from custom_components.vkusvill.diagnostics import async_get_config_entry_diagnostics
 from custom_components.vkusvill.models import Stage
 from custom_components.vkusvill.oauth import AUTHORIZE_URL, TOKEN_URL, refresh_journal
+from custom_components.vkusvill.order_card import card_store
 
 pytestmark = pytest.mark.usefixtures("enable_custom_integrations")
 STATUS = "sensor.vkusvill_order_status"
+CARD_STATUS = "sensor.vkusvill_order_card_status"
 STAGE = "sensor.vkusvill_order_stage"
 ORDER = "sensor.vkusvill_order_id"
 ACTIVE_ID = "sensor.vkusvill_active_order_id"
@@ -82,6 +87,7 @@ async def test_config_flow_setup_and_options(hass, wire, oauth_response, entry_d
     assert hass.states.get(STATUS).state == "Статус MCP"
     assert hass.states.get(ORDER).state == "21"
     assert hass.states.get(STAGE).state == STATE_UNKNOWN
+    assert hass.states.get(CARD_STATUS).state == STATE_UNKNOWN
     assert hass.states.get(ACTIVE_ID).state == STATE_UNKNOWN
     assert hass.states.get(ACTIVE).state == STATE_UNKNOWN
     assert hass.states.get(COURIER).state == STATE_UNKNOWN
@@ -100,6 +106,93 @@ async def test_config_flow_setup_and_options(hass, wire, oauth_response, entry_d
     assert hass.states.get(STATUS).state == STATE_UNKNOWN
     assert hass.states.get(ACTIVE).state == STATE_UNKNOWN
     assert hass.states.get(LAST_ORDER).state == STATE_UNKNOWN
+
+
+@pytest.mark.parametrize("terminal_stage", [Stage.DELIVERED, Stage.CANCELLED])
+async def test_card_expires_at_sixty_minutes_without_polling(
+    hass, entry, wire, freezer, monkeypatch, terminal_stage
+):
+    active = {"id": 30, "status_name": "fixture active", "created_at": 2000}
+    terminal = {**active, "status_name": "fixture terminal"}
+    monkeypatch.setattr(
+        models,
+        "VERIFIED_STATUSES",
+        {
+            "fixture active": Stage.WITH_COURIER,
+            "fixture terminal": terminal_stage,
+        },
+    )
+    wire.orders([terminal])
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    assert hass.states.get(CARD_STATUS).state == STATE_UNKNOWN
+    coordinator = entry.runtime_data
+    coordinator.update_interval = None
+
+    wire.orders([active])
+    await coordinator.async_refresh()
+    assert hass.states.get(CARD_STATUS).state == active["status_name"]
+
+    # A different, newer order is selected by the regular status sensor after completion.
+    other = {"id": 31, "status_name": "unknown newer order", "created_at": 3000}
+    wire.orders([terminal, other])
+    await coordinator.async_refresh()
+    assert hass.states.get(STATUS).state == other["status_name"]
+    assert hass.states.get(CARD_STATUS).state == terminal["status_name"]
+    finished_at = coordinator.data.fetched_at
+
+    freezer.tick(timedelta(minutes=10))
+    wire.orders([terminal])
+    await coordinator.async_refresh()
+    assert hass.states.get(CARD_STATUS).state == terminal["status_name"]
+    calls = len(wire.calls)
+    async_fire_time_changed_exact(hass, finished_at + timedelta(minutes=59, seconds=59))
+    assert hass.states.get(CARD_STATUS).state == terminal["status_name"]
+    async_fire_time_changed_exact(hass, finished_at + timedelta(minutes=60, seconds=1))
+    assert hass.states.get(CARD_STATUS).state == STATE_UNKNOWN
+    assert len(wire.calls) == calls
+
+
+async def test_card_restores_grace_period_and_discards_unobserved_transitions(
+    hass, entry, wire, freezer, monkeypatch
+):
+    raw_active = "fixture active"
+    raw_terminal = "fixture terminal"
+    monkeypatch.setattr(
+        models, "VERIFIED_STATUSES", {raw_active: Stage.ASSEMBLING, raw_terminal: Stage.DELIVERED}
+    )
+    active = {"id_general": "private-order-for-card", "status_name": raw_active}
+    terminal = {**active, "status_name": raw_terminal}
+    wire.orders([active])
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    assert hass.states.get(CARD_STATUS).state == raw_active
+
+    wire.orders([])
+    await entry.runtime_data.async_refresh()
+    assert hass.states.get(CARD_STATUS).state == STATE_UNKNOWN
+    wire.orders([terminal])
+    await entry.runtime_data.async_refresh()
+    assert hass.states.get(CARD_STATUS).state == STATE_UNKNOWN
+
+    for row in (active, {**active, "status_name": "Unrecognized intermediate"}, terminal):
+        wire.orders([row])
+        await entry.runtime_data.async_refresh()
+    assert hass.states.get(CARD_STATUS).state == raw_terminal
+    before = await card_store(hass, entry).async_load()
+    assert set(before) == {"fingerprint", "expires_at"}
+    assert active["id_general"] not in str(before)
+    assert raw_terminal not in str(before)
+
+    freezer.tick(timedelta(minutes=20))
+    wire.orders([terminal])
+    assert await hass.config_entries.async_reload(entry.entry_id)
+    assert hass.states.get(CARD_STATUS).state == raw_terminal
+    assert await card_store(hass, entry).async_load() == before
+
+    wire.status(MCP_URL, 503)
+    await entry.runtime_data.async_refresh()
+    assert hass.states.get(CARD_STATUS).state == STATE_UNAVAILABLE
+    await hass.config_entries.async_remove(entry.entry_id)
+    assert await card_store(hass, entry).async_load() is None
 
 
 async def test_last_order_time_uses_all_pages_independent_of_active_order(
@@ -154,6 +247,7 @@ async def test_denial_and_missing_refresh_token(hass, wire, oauth_response, entr
 async def test_refresh_availability_redaction_and_unload_reload(
     hass, entry, entry_data, wire, caplog
 ):
+    caplog.set_level(logging.DEBUG, logger="custom_components.vkusvill")
     private_order = "5982429221"
     private_status = "Статус только для дисплея"
     grant = entry_data[CONF_TOKEN]
@@ -173,6 +267,7 @@ async def test_refresh_availability_redaction_and_unload_reload(
     assert registry.async_get(STATUS).unique_id == f"{entry.entry_id}_order_status"
     assert hass.states.get(STATUS).state == private_status
     assert private_order not in json.dumps(dict(hass.states.get(STATUS).attributes))
+    assert "selected_stage=unknown, raw_status_present=True, raw_status_changed=True" in caplog.text
 
     wire.json(
         "POST",
@@ -194,6 +289,8 @@ async def test_refresh_availability_redaction_and_unload_reload(
     diag = await async_get_config_entry_diagnostics(hass, entry)
     assert diag["last_error_type"] == "RpcError"
     assert diag["orders_count"] == 1
+    assert diag["selected_stage"] == "unknown"
+    assert diag["order_card_has_status"] is False
     for sensitive in (
         grant["access_token"],
         grant["refresh_token"],

@@ -57,6 +57,7 @@
   "entity": {
     "sensor": {
       "order_status": {"name": "Order status"},
+      "order_card_status": {"name": "Order card status"},
       "order_stage": {
         "name": "Order stage",
         "state": {

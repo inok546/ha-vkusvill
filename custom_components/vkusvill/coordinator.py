@@ -4,14 +4,16 @@ import logging
 from datetime import UTC, datetime, timedelta
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryAuthFailed
+from homeassistant.helpers.event import async_track_point_in_utc_time
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .api import VkusVillClient
 from .const import CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL, DOMAIN
 from .http import AccessDenied, AuthError, RateLimited, VkusVillError
-from .models import OrderSnapshot, select_orders
+from .models import OrderSnapshot, Stage, select_orders
+from .order_card import CardStatus, OrderCardTracker
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -36,6 +38,13 @@ class VkusVillCoordinator(DataUpdateCoordinator[OrderSnapshot]):
         self.client = client
         self.last_error_type: str | None = None
         self.auth_failed = False
+        self.card_status: CardStatus | None = None
+        self._card_tracker = OrderCardTracker(hass, entry)
+        self._cancel_card_expiry: CALLBACK_TYPE | None = None
+        self._closed = False
+
+    async def _async_setup(self) -> None:
+        await self._card_tracker.async_load()
 
     async def _async_update_data(self) -> OrderSnapshot:
         if self.auth_failed:
@@ -52,6 +61,9 @@ class VkusVillCoordinator(DataUpdateCoordinator[OrderSnapshot]):
             raise ConfigEntryAuthFailed("VkusVill authorization must be renewed") from None
         except RateLimited as err:
             self.last_error_type = type(err).__name__
+            _LOGGER.debug(
+                "Polling paused: http_status=%s, retry_after_seconds=%.0f", err.status, err.seconds
+            )
             raise UpdateFailed(str(err), retry_after=min(err.seconds, 3600)) from None
         except VkusVillError as err:
             self.last_error_type = type(err).__name__
@@ -60,9 +72,49 @@ class VkusVillCoordinator(DataUpdateCoordinator[OrderSnapshot]):
             self.last_error_type = "TimeoutError"
             raise UpdateFailed("VkusVill order history update timed out") from None
         self.last_error_type = None
-        return select_orders(history, datetime.now(UTC))
+        snapshot = select_orders(history, datetime.now(UTC))
+        card = await self._card_tracker.async_observe(snapshot)
+        self._set_card_status(card)
+        previous = self.data.selected if self.data is not None else None
+        present = snapshot.selected
+        _LOGGER.debug(
+            "Orders polled: count=%d, complete=%s, selected_stage=%s, "
+            "raw_status_present=%s, raw_status_changed=%s, card=%s",
+            len(history.orders),
+            history.complete,
+            present.stage if present else Stage.UNKNOWN,
+            bool(present and present.status_name),
+            (present.status_name if present else None)
+            != (previous.status_name if previous else None),
+            ("grace_period" if card.expires_at else "active") if card else "hidden",
+        )
+        return snapshot
+
+    @callback
+    def _set_card_status(self, card: CardStatus | None) -> None:
+        if self._closed or card == self.card_status:
+            return
+        if self._cancel_card_expiry is not None:
+            self._cancel_card_expiry()
+            self._cancel_card_expiry = None
+        self.card_status = card
+        if card is not None and card.expires_at is not None:
+            self._cancel_card_expiry = async_track_point_in_utc_time(
+                self.hass, self._expire_card, card.expires_at
+            )
+
+    @callback
+    def _expire_card(self, _now: datetime) -> None:
+        self._cancel_card_expiry = None
+        self.card_status = None
+        _LOGGER.debug("Order card grace period expired")
+        self.async_update_listeners()
 
     async def async_shutdown(self) -> None:
         """Stop the scheduler and wait for pending traffic before reloading."""
+        self._closed = True
+        if self._cancel_card_expiry is not None:
+            self._cancel_card_expiry()
+            self._cancel_card_expiry = None
         await super().async_shutdown()
         await self.client.close()
