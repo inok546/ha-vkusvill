@@ -224,7 +224,7 @@ def test_status_semantics(monkeypatch):
 
 
 def test_production_mapping_does_not_guess():
-    for raw in ("Доставлен", "Отменён", "У курьера", "Собирается", None):
+    for raw in ("Доставлен", "Отменён", "У курьера", "Собирается", "Успешно завершен", None):
         assert Order("1", "1", raw, None).stage == Stage.UNKNOWN
 
 

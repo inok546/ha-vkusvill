@@ -70,6 +70,7 @@
       },
       "order_id": {"name": "Номер выбранного заказа"},
       "active_order_id": {"name": "Номер активного заказа"},
+      "last_order_created_at": {"name": "Дата и время последнего заказа"},
       "last_successful_update": {"name": "Последнее успешное обновление"}
     },
     "binary_sensor": {

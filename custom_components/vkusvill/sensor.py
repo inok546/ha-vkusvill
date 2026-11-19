@@ -48,6 +48,13 @@ async def async_setup_entry(
             VkusVillSensor(
                 entry,
                 SensorEntityDescription(
+                    key="last_order_created_at", device_class=SensorDeviceClass.TIMESTAMP
+                ),
+                lambda data: data.last_order_created_at,
+            ),
+            VkusVillSensor(
+                entry,
+                SensorEntityDescription(
                     key="last_successful_update",
                     device_class=SensorDeviceClass.TIMESTAMP,
                     entity_category=EntityCategory.DIAGNOSTIC,

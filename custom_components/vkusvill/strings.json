@@ -70,6 +70,7 @@
       },
       "order_id": {"name": "Selected order number"},
       "active_order_id": {"name": "Active order number"},
+      "last_order_created_at": {"name": "Last order time"},
       "last_successful_update": {"name": "Last successful update"}
     },
     "binary_sensor": {

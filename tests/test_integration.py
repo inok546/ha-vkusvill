@@ -12,6 +12,7 @@ from homeassistant.const import STATE_UNAVAILABLE, STATE_UNKNOWN
 from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.helpers import entity_registry as er
 
+from custom_components.vkusvill import models
 from custom_components.vkusvill.const import (
     CONF_SCAN_INTERVAL,
     CONF_TOKEN,
@@ -20,6 +21,7 @@ from custom_components.vkusvill.const import (
     MCP_URL,
 )
 from custom_components.vkusvill.diagnostics import async_get_config_entry_diagnostics
+from custom_components.vkusvill.models import Stage
 from custom_components.vkusvill.oauth import AUTHORIZE_URL, TOKEN_URL, refresh_journal
 
 pytestmark = pytest.mark.usefixtures("enable_custom_integrations")
@@ -29,6 +31,7 @@ ORDER = "sensor.vkusvill_order_id"
 ACTIVE_ID = "sensor.vkusvill_active_order_id"
 ACTIVE = "binary_sensor.vkusvill_active_order"
 COURIER = "binary_sensor.vkusvill_courier"
+LAST_ORDER = "sensor.vkusvill_last_order_created_at"
 LAST_UPDATE = "sensor.vkusvill_last_successful_update"
 
 
@@ -82,6 +85,7 @@ async def test_config_flow_setup_and_options(hass, wire, oauth_response, entry_d
     assert hass.states.get(ACTIVE_ID).state == STATE_UNKNOWN
     assert hass.states.get(ACTIVE).state == STATE_UNKNOWN
     assert hass.states.get(COURIER).state == STATE_UNKNOWN
+    assert hass.states.get(LAST_ORDER).state == STATE_UNKNOWN
     assert hass.states.get(LAST_UPDATE).state not in {STATE_UNKNOWN, STATE_UNAVAILABLE}
     assert entry.runtime_data.update_interval.total_seconds() == 120
 
@@ -95,6 +99,39 @@ async def test_config_flow_setup_and_options(hass, wire, oauth_response, entry_d
     assert entry.runtime_data.update_interval.total_seconds() == 240
     assert hass.states.get(STATUS).state == STATE_UNKNOWN
     assert hass.states.get(ACTIVE).state == STATE_UNKNOWN
+    assert hass.states.get(LAST_ORDER).state == STATE_UNKNOWN
+
+
+async def test_last_order_time_uses_all_pages_independent_of_active_order(
+    hass, entry, wire, monkeypatch
+):
+    monkeypatch.setattr(models, "VERIFIED_STATUSES", {"fixture active": Stage.ASSEMBLING})
+    active_time = "2026-11-17T21:00:00+00:00"
+    latest_time = "2026-11-18T18:00:00+00:00"
+    wire.orders(
+        [{"id": 20, "created_at": active_time, "status_name": "fixture active"}],
+        has_more=True,
+    )
+    wire.orders(
+        [{"id": 21, "created_at": "2026-11-18T21:00:00+03:00"}, {"id": 22}],
+        page=2,
+        has_more=False,
+    )
+
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    assert hass.states.get(ORDER).state == "20"
+    assert hass.states.get(STATUS).attributes["order_created_at"] == active_time
+    last_order = hass.states.get(LAST_ORDER)
+    assert last_order.state == latest_time
+    assert last_order.attributes["device_class"] == "timestamp"
+    assert er.async_get(hass).async_get(LAST_ORDER).unique_id == (
+        f"{entry.entry_id}_last_order_created_at"
+    )
+
+    wire.orders([{"id": 21, "created_at": latest_time, "status_name": "Другой статус"}])
+    await entry.runtime_data.async_refresh()
+    assert hass.states.get(LAST_ORDER).state == latest_time
+    assert hass.states.get(LAST_ORDER).last_changed == last_order.last_changed
 
 
 async def test_denial_and_missing_refresh_token(hass, wire, oauth_response, entry_data):
@@ -153,6 +190,7 @@ async def test_refresh_availability_redaction_and_unload_reload(
     await entry.runtime_data.async_refresh()
     assert hass.states.get(STATUS).state == STATE_UNAVAILABLE
     assert hass.states.get(ACTIVE).state == STATE_UNAVAILABLE
+    assert hass.states.get(LAST_ORDER).state == STATE_UNAVAILABLE
     diag = await async_get_config_entry_diagnostics(hass, entry)
     assert diag["last_error_type"] == "RpcError"
     assert diag["orders_count"] == 1

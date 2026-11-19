@@ -66,6 +66,7 @@ class OrderSnapshot:
     selected: Order | None
     active_order: Order | None
     has_active_order: bool | None
+    last_order_created_at: datetime | None
     fetched_at: datetime
 
     @property
@@ -93,5 +94,12 @@ def select_orders(history: OrderHistory, fetched_at: datetime) -> OrderSnapshot:
         has_active = True
     elif history.complete and orders and all(order.stage in TERMINAL for order in orders):
         has_active = False
-    selected = active or max(orders, key=_sort_key, default=None)
-    return OrderSnapshot(history, selected, active, has_active, fetched_at)
+    latest = max(orders, key=_sort_key, default=None)
+    return OrderSnapshot(
+        history=history,
+        selected=active or latest,
+        active_order=active,
+        has_active_order=has_active,
+        last_order_created_at=latest.created_at if latest else None,
+        fetched_at=fetched_at,
+    )
