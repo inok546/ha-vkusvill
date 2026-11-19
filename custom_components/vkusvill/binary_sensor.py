@@ -1,14 +1,13 @@
 """Binary sensors backed by verified classifications."""
 
-from collections.abc import Callable
-
 from homeassistant.components.binary_sensor import BinarySensorEntity
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
+from .const import DOMAIN
 from .coordinator import VkusVillConfigEntry
 from .entity import VkusVillEntity
-from .models import OrderSnapshot
 
 
 async def async_setup_entry(
@@ -16,25 +15,22 @@ async def async_setup_entry(
     entry: VkusVillConfigEntry,
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
-    """Add tri-state binary sensors."""
-    async_add_entities(
-        [
-            VkusVillBinarySensor(entry, "active_order", lambda data: data.has_active_order),
-            VkusVillBinarySensor(entry, "courier", lambda data: data.with_courier),
-        ]
-    )
+    """Add the active-order sensor and drop the duplicate courier entity."""
+    registry = er.async_get(hass)
+    if entity_id := registry.async_get_entity_id(
+        "binary_sensor", DOMAIN, f"{entry.entry_id}_courier"
+    ):
+        registry.async_remove(entity_id)
+    async_add_entities([VkusVillActiveOrderSensor(entry)])
 
 
-class VkusVillBinarySensor(VkusVillEntity, BinarySensorEntity):
+class VkusVillActiveOrderSensor(VkusVillEntity, BinarySensorEntity):
     """Keep an unverified classification unknown."""
 
-    def __init__(
-        self, entry: VkusVillConfigEntry, key: str, value: Callable[[OrderSnapshot], bool | None]
-    ) -> None:
-        super().__init__(entry, "binary_sensor", key)
-        self._value = value
+    def __init__(self, entry: VkusVillConfigEntry) -> None:
+        super().__init__(entry, "binary_sensor", "active_order")
 
     @property
     def is_on(self) -> bool | None:
         """Return a verified boolean or unknown."""
-        return self._value(self.coordinator.data)
+        return self.coordinator.data.has_active_order

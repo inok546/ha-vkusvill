@@ -1,6 +1,7 @@
 """Poll VkusVill through a single coordinator."""
 
 import logging
+from collections import Counter
 from datetime import UTC, datetime, timedelta
 
 from homeassistant.config_entries import ConfigEntry
@@ -75,19 +76,33 @@ class VkusVillCoordinator(DataUpdateCoordinator[OrderSnapshot]):
         snapshot = select_orders(history, datetime.now(UTC))
         card = await self._card_tracker.async_observe(snapshot)
         self._set_card_status(card)
-        previous = self.data.selected if self.data is not None else None
-        present = snapshot.selected
-        _LOGGER.debug(
-            "Orders polled: count=%d, complete=%s, selected_stage=%s, "
-            "raw_status_present=%s, raw_status_changed=%s, card=%s",
-            len(history.orders),
-            history.complete,
-            present.stage if present else Stage.UNKNOWN,
-            bool(present and present.status_name),
-            (present.status_name if present else None)
-            != (previous.status_name if previous else None),
-            ("grace_period" if card.expires_at else "active") if card else "hidden",
-        )
+        if _LOGGER.isEnabledFor(logging.DEBUG):
+            previous = self.data.selected if self.data is not None else None
+            present = snapshot.selected
+            counts = Counter(order.status.active for order in history.orders)
+            same_order = None
+            if previous and previous.key and present and present.key:
+                same_order = previous.key == present.key
+            _LOGGER.debug(
+                "Orders polled: count=%d, complete=%s, selected_stage=%s, "
+                "raw_status_present=%s, raw_status_changed=%s, card=%s, "
+                "same_order=%s, active=%d, terminal=%d, unclassified=%d, without_created_at=%d, "
+                "delivery_time_fields=%s, lifecycle_fields=%s",
+                len(history.orders),
+                history.complete,
+                present.stage if present else Stage.UNKNOWN,
+                bool(present and present.status_name),
+                (present.status_name if present else None)
+                != (previous.status_name if previous else None),
+                ("grace_period" if card.expires_at else "active") if card else "hidden",
+                same_order,
+                counts[True],
+                counts[False],
+                counts[None],
+                sum(order.created_at is None for order in history.orders),
+                present.delivery_time_fields if present else (),
+                present.lifecycle_fields if present else (),
+            )
         return snapshot
 
     @callback

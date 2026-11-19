@@ -1,6 +1,7 @@
 """Read and parse order history through the official MCP tool."""
 
 import asyncio
+import logging
 import re
 import unicodedata
 from datetime import UTC, datetime
@@ -23,6 +24,7 @@ PAGE_SIZE = 10
 MAX_PAGES = 8
 POLL_TIMEOUT = 60
 _ORDER_ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
+_LOGGER = logging.getLogger(__name__)
 
 
 def _dict(value: Any) -> dict[str, Any]:
@@ -122,6 +124,100 @@ def _created_at(value: Any) -> datetime | None:
     return None
 
 
+# These are schema hints only. The public MCP contract does not define an ETA field.
+_DELIVERY_TIME_KEYS = (
+    "eta",
+    "eta_minutes",
+    "etaMinutes",
+    "delivery_at",
+    "deliveryAt",
+    "delivery_date",
+    "deliveryDate",
+    "delivery_time",
+    "deliveryTime",
+    "delivery_time_from",
+    "deliveryTimeFrom",
+    "delivery_time_to",
+    "deliveryTimeTo",
+    "delivery_eta",
+    "deliveryEta",
+    "delivery_slot",
+    "deliverySlot",
+    "delivery_window",
+    "deliveryWindow",
+    "delivery_interval",
+    "deliveryInterval",
+    "estimated_arrival_at",
+    "estimatedArrivalAt",
+    "estimated_delivery_at",
+    "estimatedDeliveryAt",
+    "estimated_delivery_time",
+    "estimatedDeliveryTime",
+    "expected_delivery_at",
+    "expectedDeliveryAt",
+    "expected_delivery_time",
+    "expectedDeliveryTime",
+    "scheduled_delivery_at",
+    "scheduledDeliveryAt",
+)
+_DELIVERY_DETAILS = (
+    "delivery",
+    "delivery_info",
+    "deliveryInfo",
+    "delivery_slot",
+    "deliverySlot",
+    "delivery_window",
+    "deliveryWindow",
+    "delivery_interval",
+    "deliveryInterval",
+)
+_DELIVERY_DETAIL_KEYS = (
+    "eta",
+    "minutes",
+    "remaining_minutes",
+    "remainingMinutes",
+    "at",
+    "from",
+    "to",
+    "start",
+    "end",
+    "estimated_at",
+    "estimatedAt",
+    "expected_at",
+    "expectedAt",
+)
+_LIFECYCLE_KEYS = (
+    "status_id",
+    "statusId",
+    "status_code",
+    "statusCode",
+    "updated_at",
+    "updatedAt",
+    "status_changed_at",
+    "statusChangedAt",
+    "completed_at",
+    "completedAt",
+    "delivered_at",
+    "deliveredAt",
+    "cancelled_at",
+    "cancelledAt",
+    "canceled_at",
+    "canceledAt",
+)
+
+
+def _field_types(data: dict[str, Any], keys: tuple[str, ...], prefix: str = "") -> tuple[str, ...]:
+    return tuple(f"{prefix}{name}:{type(data[name]).__name__}" for name in keys if name in data)
+
+
+def _delivery_time_fields(order: dict[str, Any]) -> tuple[str, ...]:
+    fields = _field_types(order, _DELIVERY_TIME_KEYS)
+    for name in _DELIVERY_DETAILS:
+        if isinstance(details := order.get(name), dict):
+            fields += _field_types(details, _DELIVERY_DETAIL_KEYS, f"{name}.")
+    return fields
+
+
 def parse_page(envelope: dict[str, Any], rpc_id: int, sensitive: tuple[str, ...] = ()) -> OrderPage:
     """Extract a page without retaining product lines or the MCP envelope."""
     inner = _payload(envelope, rpc_id)
@@ -150,6 +246,8 @@ def parse_page(envelope: dict[str, Any], rpc_id: int, sensitive: tuple[str, ...]
                 status,
                 created_at,
                 is_delivery=item.get("service") == "Доставка",
+                delivery_time_fields=_delivery_time_fields(item),
+                lifecycle_fields=_field_types(item, _LIFECYCLE_KEYS),
             )
         )
     return OrderPage(tuple(orders), has_more)
@@ -197,6 +295,7 @@ class VkusVillClient:
         try:
             return await fetch_order_page(self.http, token, page, secret)
         except Unauthorized:
+            _LOGGER.debug("Order history authorization rejected: page=%d, retry=refresh", page)
             rotated = await self.tokens.get(rejected=token)
             return await fetch_order_page(self.http, rotated, page, secret)
 
@@ -210,19 +309,35 @@ class VkusVillClient:
             duplicate = False
             for page in range(1, MAX_PAGES + 1):
                 result = await self._page(page)
-                added = False
+                before = len(orders)
                 for order in result.items:
                     if order.key is not None:
                         if order.key in seen:
-                            duplicate = True
                             continue
                         seen.add(order.key)
                     orders.append(order)
-                    added = True
+                added = len(orders) - before
+                repeated = len(result.items) - added
+                duplicate = duplicate or repeated > 0
+                _LOGGER.debug(
+                    "Orders page: page=%d, received=%d, retained=%d, duplicates=%d, has_more=%s",
+                    page,
+                    len(result.items),
+                    added,
+                    repeated,
+                    result.has_more,
+                )
                 if result.has_more is False or (
                     result.has_more is None and len(result.items) < PAGE_SIZE
                 ):
+                    _LOGGER.debug(
+                        "Order history stopped: page=%d, reason=%s",
+                        page,
+                        "provider_end" if result.has_more is False else "short_page",
+                    )
                     return OrderHistory(tuple(orders), not duplicate)
                 if not added:
-                    break
+                    _LOGGER.debug("Order history stopped: page=%d, reason=no_new_orders", page)
+                    return OrderHistory(tuple(orders), False)
+            _LOGGER.debug("Order history stopped: page=%d, reason=page_limit", MAX_PAGES)
             return OrderHistory(tuple(orders), False)

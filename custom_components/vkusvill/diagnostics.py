@@ -21,6 +21,7 @@ async def async_get_config_entry_diagnostics(
     if entry.state is ConfigEntryState.LOADED:
         coordinator = entry.runtime_data
         snapshot = coordinator.data
+        selected = snapshot.selected
         result.update(
             connected=coordinator.last_update_success,
             last_error_type=coordinator.last_error_type,
@@ -35,5 +36,7 @@ async def async_get_config_entry_diagnostics(
             raw_status_present=bool(snapshot.selected and snapshot.selected.status_name),
             order_card_has_status=coordinator.last_update_success
             and coordinator.card_status is not None,
+            delivery_time_fields=list(selected.delivery_time_fields) if selected else [],
+            lifecycle_fields=list(selected.lifecycle_fields) if selected else [],
         )
     return result

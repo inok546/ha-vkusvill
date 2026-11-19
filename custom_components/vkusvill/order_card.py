@@ -1,5 +1,6 @@
 """Track the text to show during an order and after its observed completion."""
 
+import logging
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from hmac import digest
@@ -13,6 +14,7 @@ from .const import CONF_TOKEN, DOMAIN
 from .models import OrderSnapshot, newest_order
 
 CARD_HOLD = timedelta(minutes=60)
+_LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -60,6 +62,10 @@ class OrderCardTracker:
         now = utcnow()
         if expires_at and expires_at.tzinfo and now < expires_at <= now + CARD_HOLD:
             self._completion = _Completion(fingerprint, expires_at)
+            _LOGGER.debug(
+                "Completion checkpoint loaded: remaining_seconds=%.0f",
+                (expires_at - now).total_seconds(),
+            )
 
     async def async_observe(self, snapshot: OrderSnapshot) -> CardStatus | None:
         """Start a grace period for a confirmed active-to-terminal transition."""
@@ -89,12 +95,21 @@ class OrderCardTracker:
                     "expires_at": completion.expires_at.isoformat(),
                 }
             )
+            _LOGGER.debug(
+                "Completed order observed: stage=%s, hold_seconds=%.0f",
+                completed.stage,
+                CARD_HOLD.total_seconds(),
+            )
         elif (completion := self._completion) is not None:
-            if completion.expires_at <= snapshot.fetched_at or any(
+            expired = completion.expires_at <= snapshot.fetched_at
+            if expired or any(
                 self._fingerprint(key) == completion.fingerprint for key in self._active
             ):
                 self._completion = None
                 await self._store.async_save({})
+                _LOGGER.debug(
+                    "Completion checkpoint cleared: reason=%s", "expired" if expired else "reopened"
+                )
             else:
                 observed = next(
                     (
@@ -108,6 +123,8 @@ class OrderCardTracker:
                 )
                 if observed is not None and observed.status_name != completion.text:
                     self._completion = replace(completion, text=observed.status_name)
+                    if completion.text is None:
+                        _LOGGER.debug("Completion checkpoint matched a terminal order")
 
         if snapshot.active_order and snapshot.active_order.status_name:
             return CardStatus(snapshot.active_order.status_name)

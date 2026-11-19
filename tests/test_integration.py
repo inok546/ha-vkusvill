@@ -35,7 +35,6 @@ STAGE = "sensor.vkusvill_order_stage"
 ORDER = "sensor.vkusvill_order_id"
 ACTIVE_ID = "sensor.vkusvill_active_order_id"
 ACTIVE = "binary_sensor.vkusvill_active_order"
-COURIER = "binary_sensor.vkusvill_courier"
 LAST_ORDER = "sensor.vkusvill_last_order_created_at"
 LAST_UPDATE = "sensor.vkusvill_last_successful_update"
 
@@ -90,7 +89,6 @@ async def test_config_flow_setup_and_options(hass, wire, oauth_response, entry_d
     assert hass.states.get(CARD_STATUS).state == STATE_UNKNOWN
     assert hass.states.get(ACTIVE_ID).state == STATE_UNKNOWN
     assert hass.states.get(ACTIVE).state == STATE_UNKNOWN
-    assert hass.states.get(COURIER).state == STATE_UNKNOWN
     assert hass.states.get(LAST_ORDER).state == STATE_UNKNOWN
     assert hass.states.get(LAST_UPDATE).state not in {STATE_UNKNOWN, STATE_UNAVAILABLE}
     assert entry.runtime_data.update_interval.total_seconds() == 120
@@ -153,8 +151,9 @@ async def test_card_expires_at_sixty_minutes_without_polling(
 
 
 async def test_card_restores_grace_period_and_discards_unobserved_transitions(
-    hass, entry, wire, freezer, monkeypatch
+    hass, entry, wire, freezer, monkeypatch, caplog
 ):
+    caplog.set_level(logging.DEBUG, logger="custom_components.vkusvill")
     raw_active = "fixture active"
     raw_terminal = "fixture terminal"
     monkeypatch.setattr(
@@ -192,6 +191,11 @@ async def test_card_restores_grace_period_and_discards_unobserved_transitions(
     assert await hass.config_entries.async_reload(entry.entry_id)
     assert hass.states.get(CARD_STATUS).state == raw_terminal
     assert await card_store(hass, entry).async_load() == before
+    assert "Completed order observed: stage=delivered, hold_seconds=3600" in caplog.text
+    assert "Completion checkpoint loaded: remaining_seconds=2400" in caplog.text
+    assert "Completion checkpoint matched a terminal order" in caplog.text
+    assert active["id_general"] not in caplog.text
+    assert raw_terminal not in caplog.text
 
     wire.status(MCP_URL, 503)
     await entry.runtime_data.async_refresh()
@@ -216,10 +220,10 @@ async def test_reported_delivery_sequence_drives_sensors_and_card(
     coordinator = entry.runtime_data
     coordinator.update_interval = None
 
-    for status, stage, courier in (
-        ("Сборка", Stage.ASSEMBLING, "off"),
-        ("Готов", Stage.OTHER, "off"),
-        ("Доставка", Stage.WITH_COURIER, "on"),
+    for status, stage in (
+        ("Сборка", Stage.ASSEMBLING),
+        ("Готов", Stage.OTHER),
+        ("Доставка", Stage.WITH_COURIER),
     ):
         freezer.tick(timedelta(minutes=2))
         wire.orders([previous, {**current, "status_name": status}])
@@ -228,18 +232,83 @@ async def test_reported_delivery_sequence_drives_sensors_and_card(
         assert hass.states.get(STAGE).state == stage
         assert hass.states.get(ACTIVE_ID).state == "31"
         assert hass.states.get(ACTIVE).state == "on"
-        assert hass.states.get(COURIER).state == courier
+
+    freezer.tick(timedelta(hours=2))
+    async_fire_time_changed_exact(hass, coordinator.data.fetched_at + timedelta(hours=2))
+    assert hass.states.get(CARD_STATUS).state == "Доставка"
 
     freezer.tick(timedelta(minutes=2))
     wire.orders([previous, {**current, "status_name": "Успешно завершен"}])
     await coordinator.async_refresh()
     assert hass.states.get(STAGE).state == completion_stage
     assert hass.states.get(ACTIVE_ID).state == STATE_UNKNOWN
-    assert hass.states.get(ACTIVE).state == hass.states.get(COURIER).state == "off"
+    assert hass.states.get(ACTIVE).state == "off"
     assert hass.states.get(CARD_STATUS).state == "Успешно завершен"
     async_fire_time_changed_exact(
         hass, coordinator.data.fetched_at + timedelta(minutes=60, seconds=1)
     )
+    assert hass.states.get(CARD_STATUS).state == STATE_UNKNOWN
+
+
+async def test_removes_only_legacy_courier_entity(hass, entry, wire):
+    registry = er.async_get(hass)
+    legacy_courier = registry.async_get_or_create(
+        "binary_sensor",
+        DOMAIN,
+        f"{entry.entry_id}_courier",
+        config_entry=entry,
+        suggested_object_id="custom_courier_name",
+    )
+    unrelated = registry.async_get_or_create(
+        "binary_sensor", "test", "unrelated_courier", suggested_object_id="courier"
+    )
+
+    wire.orders([])
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    assert registry.async_get(legacy_courier.entity_id) is None
+    assert registry.async_get(unrelated.entity_id) is unrelated
+    assert registry.async_get(ACTIVE).unique_id == f"{entry.entry_id}_active_order"
+
+
+async def test_schema_diagnostics_record_only_field_names_and_types(hass, entry, wire, caplog):
+    caplog.set_level(logging.DEBUG, logger="custom_components.vkusvill")
+    order = {
+        "id": "private-order-reference",
+        "status_name": "Доставка",
+        "deliveryTime": "private delivery time",
+        "delivery_slot": {"from": "private estimate", "address": "private address"},
+        "statusCode": "private status code value",
+        "completed_at": None,
+        "unknown_private_key": "private contents",
+        "created_at": 1600000000,
+    }
+    wire.orders([order])
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    assert hass.states.get(CARD_STATUS).state == "Доставка"
+    wire.orders([{**order, "status_name": "private unknown status"}])
+    await entry.runtime_data.async_refresh()
+    diag = await async_get_config_entry_diagnostics(hass, entry)
+    assert diag["delivery_time_fields"] == [
+        "deliveryTime:str",
+        "delivery_slot:dict",
+        "delivery_slot.from:str",
+    ]
+    assert diag["lifecycle_fields"] == ["statusCode:str", "completed_at:NoneType"]
+    assert "same_order=True, active=0, terminal=0, unclassified=1" in caplog.text
+    assert "delivery_slot.from:str" in caplog.text
+    assert "statusCode:str" in caplog.text
+    for private in (
+        "private delivery time",
+        "private address",
+        "private estimate",
+        "private status code value",
+        "private unknown status",
+        "private-order-reference",
+        "unknown_private_key",
+        "created_at:int",
+    ):
+        assert private not in str(diag)
+        assert private not in caplog.text
     assert hass.states.get(CARD_STATUS).state == STATE_UNKNOWN
 
 

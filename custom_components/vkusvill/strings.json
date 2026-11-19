@@ -57,12 +57,12 @@
   "entity": {
     "sensor": {
       "order_status": {"name": "Order status"},
-      "order_card_status": {"name": "Order card status"},
+      "order_card_status": {"name": "Active or recently completed order status"},
       "order_stage": {
         "name": "Order stage",
         "state": {
           "assembling": "Assembling",
-          "with_courier": "With courier",
+          "with_courier": "Out for delivery",
           "delivered": "Delivered",
           "cancelled": "Cancelled",
           "other": "Other",
@@ -75,8 +75,7 @@
       "last_successful_update": {"name": "Last successful update"}
     },
     "binary_sensor": {
-      "active_order": {"name": "Active order"},
-      "courier": {"name": "Order with courier"}
+      "active_order": {"name": "Active order"}
     }
   }
 }

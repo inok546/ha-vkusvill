@@ -57,12 +57,12 @@
   "entity": {
     "sensor": {
       "order_status": {"name": "Статус заказа"},
-      "order_card_status": {"name": "Статус для карточки заказа"},
+      "order_card_status": {"name": "Статус активного или недавно завершённого заказа"},
       "order_stage": {
         "name": "Стадия заказа",
         "state": {
           "assembling": "Собирается",
-          "with_courier": "У курьера",
+          "with_courier": "На доставке",
           "delivered": "Доставлен",
           "cancelled": "Отменён",
           "other": "Другой",
@@ -75,8 +75,7 @@
       "last_successful_update": {"name": "Последнее успешное обновление"}
     },
     "binary_sensor": {
-      "active_order": {"name": "Активный заказ"},
-      "courier": {"name": "Заказ у курьера"}
+      "active_order": {"name": "Активный заказ"}
     }
   }
 }

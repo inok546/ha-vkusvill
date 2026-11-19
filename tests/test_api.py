@@ -1,6 +1,7 @@
 """Transport, order parsing, paging, rate limits, and status semantics."""
 
 import json
+import logging
 from datetime import UTC, datetime, timedelta
 from email.utils import format_datetime
 from unittest.mock import AsyncMock
@@ -100,7 +101,8 @@ async def test_page_requests_and_later_order(client, wire):
         assert rpc["params"]["name"] == ORDER_TOOL
 
 
-async def test_pagination_cap_and_dedupe(client, wire):
+async def test_pagination_cap_and_dedupe(client, wire, caplog):
+    caplog.set_level(logging.DEBUG, logger="custom_components.vkusvill")
     for page in range(1, MAX_PAGES + 1):
         wire.orders([{"id": page}], page=page, has_more=True)
     result = await client.get_history()
@@ -111,6 +113,9 @@ async def test_pagination_cap_and_dedupe(client, wire):
     result = await client.get_history()
     assert not result.complete
     assert [order.status_name for order in result.orders] == ["first"]
+    assert f"Order history stopped: page={MAX_PAGES}, reason=page_limit" in caplog.text
+    assert "Order history stopped: page=2, reason=no_new_orders" in caplog.text
+    assert "Orders page: page=2, received=1, retained=0, duplicates=1" in caplog.text
 
 
 async def test_empty_history_ends_full_page_without_meta(client, wire):
@@ -122,7 +127,8 @@ async def test_empty_history_ends_full_page_without_meta(client, wire):
     assert wire.pages == [1, 2]
 
 
-async def test_sse_matches_rpc_id_and_stops_before_trailing_event(client, wire):
+async def test_sse_matches_rpc_id_and_stops_before_trailing_event(client, wire, caplog):
+    caplog.set_level(logging.DEBUG, logger="custom_components.vkusvill")
     wire.add(
         "POST",
         MCP_URL,
@@ -137,15 +143,20 @@ async def test_sse_matches_rpc_id_and_stops_before_trailing_event(client, wire):
     )
     result = await client.get_history()
     assert result == OrderHistory((), True)
+    assert "HTTP response: operation=orders, status=200, sse=True" in caplog.text
+    assert "data: ignore" not in caplog.text
 
 
-async def test_timeout_and_malformed_json(client, wire):
-    wire.add("POST", MCP_URL, TimeoutError())
+async def test_timeout_and_malformed_json(client, wire, caplog):
+    caplog.set_level(logging.DEBUG, logger="custom_components.vkusvill")
+    wire.add("POST", MCP_URL, TimeoutError("private timeout cause"))
     with pytest.raises(ConnectionError, match="Could not reach"):
         await client.get_history()
     wire.add("POST", MCP_URL, Response(raw=b'{"data"'))
     with pytest.raises(ProtocolError, match="Malformed"):
         await client.get_history()
+    assert "HTTP request failed: operation=orders, reason=timeout" in caplog.text
+    assert "private timeout cause" not in caplog.text
 
 
 async def test_transport_size_cap_and_redirect(client, wire, monkeypatch):
@@ -210,11 +221,11 @@ def test_status_semantics(monkeypatch):
     )
     assert snapshot.selected is selected
     assert snapshot.has_active_order is True
-    assert snapshot.with_courier is True
+    assert snapshot.selected.stage == Stage.WITH_COURIER
     terminal = select_orders(OrderHistory((delivered, cancelled), True), now)
     assert terminal.selected.stage == Stage.DELIVERED
     assert cancelled.stage == Stage.CANCELLED
-    assert terminal.has_active_order is terminal.with_courier is False
+    assert terminal.has_active_order is False
     assert select_orders(OrderHistory((delivered,), False), now).has_active_order is None
     assert select_orders(OrderHistory((unknown,), True), now).has_active_order is None
     assert select_orders(OrderHistory((), True), now).has_active_order is None

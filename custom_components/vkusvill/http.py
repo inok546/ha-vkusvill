@@ -1,6 +1,7 @@
 """Bounded HTTP transport shared by OAuth and MCP."""
 
 import json
+import logging
 import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -13,6 +14,7 @@ from aiohttp import ClientError, ClientResponse, ClientSession, ClientTimeout
 
 from .const import MCP_ORIGIN, OAUTH_ORIGIN
 
+_LOGGER = logging.getLogger(__name__)
 TIMEOUT = ClientTimeout(total=20, connect=8, sock_read=12)
 MCP_LIMIT = 4 * 1024 * 1024
 OAUTH_LIMIT = 256 * 1024
@@ -179,6 +181,10 @@ class HttpClient:
         headers = {"Accept": "application/json, text/event-stream" if rpc else "application/json"}
         if bearer is not None:
             headers["Authorization"] = f"Bearer {bearer}"
+        operation = (
+            "orders" if rpc is not None else "oauth_token" if form is not None else "discovery"
+        )
+        started = monotonic()
         try:
             async with self.session.request(
                 method,
@@ -191,6 +197,14 @@ class HttpClient:
                 raise_for_status=False,
             ) as response:
                 status = response.status
+                stream = rpc is not None and response.content_type == "text/event-stream"
+                _LOGGER.debug(
+                    "HTTP response: operation=%s, status=%d, sse=%s, headers_ms=%.0f",
+                    operation,
+                    status,
+                    stream,
+                    (monotonic() - started) * 1000,
+                )
                 if 300 <= status < 400:
                     raise ProtocolError("VkusVill returned an unexpected redirect")
                 if status in (429, 503):
@@ -204,7 +218,7 @@ class HttpClient:
                     raise Unauthorized("VkusVill rejected the access token")
                 if status >= 400 and (form is None or status >= 500):
                     return status, {}
-                if rpc is not None and response.content_type == "text/event-stream":
+                if rpc is not None and stream:
                     value = await _events(response, rpc["id"])
                 else:
                     body = await _body(response, MCP_LIMIT if rpc else OAUTH_LIMIT)
@@ -212,5 +226,11 @@ class HttpClient:
                 if status < 400:
                     self.cooldown.success(origin)
                 return status, value
-        except ClientError, TimeoutError:
+        except (ClientError, TimeoutError) as err:
+            _LOGGER.debug(
+                "HTTP request failed: operation=%s, reason=%s, elapsed_ms=%.0f",
+                operation,
+                "timeout" if isinstance(err, TimeoutError) else "connection",
+                (monotonic() - started) * 1000,
+            )
             raise ConnectionError("Could not reach VkusVill") from None

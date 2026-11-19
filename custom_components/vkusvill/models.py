@@ -45,6 +45,8 @@ class Order:
     status_name: str | None
     created_at: datetime | None
     is_delivery: bool = False
+    delivery_time_fields: tuple[str, ...] = ()
+    lifecycle_fields: tuple[str, ...] = ()
 
     @property
     def status(self) -> OrderStatus:
@@ -90,13 +92,6 @@ class OrderSnapshot:
     has_active_order: bool | None
     last_order_created_at: datetime | None
     fetched_at: datetime
-
-    @property
-    def with_courier(self) -> bool | None:
-        """Report courier status for the selected verified active order."""
-        if self.active_order:
-            return self.active_order.stage == Stage.WITH_COURIER
-        return False if self.has_active_order is False else None
 
 
 def _sort_key(order: Order) -> tuple[float, str, str]:
