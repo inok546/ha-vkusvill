@@ -10,7 +10,7 @@ from homeassistant.helpers.storage import Store
 from homeassistant.util.dt import parse_datetime, utcnow
 
 from .const import CONF_TOKEN, DOMAIN
-from .models import ACTIVE, TERMINAL, OrderSnapshot, newest_order
+from .models import OrderSnapshot, newest_order
 
 CARD_HOLD = timedelta(minutes=60)
 
@@ -65,14 +65,15 @@ class OrderCardTracker:
         """Start a grace period for a confirmed active-to-terminal transition."""
         orders = snapshot.history.orders
         completed = newest_order(
-            order for order in orders if order.key in self._active and order.stage in TERMINAL
+            order for order in orders if order.key in self._active and order.status.active is False
         )
         self._active = {
             order.key
             for order in orders
             if order.key is not None
             and (
-                order.stage in ACTIVE or (order.key in self._active and order.stage not in TERMINAL)
+                order.status.active is True
+                or (order.key in self._active and order.status.active is None)
             )
         }
         if completed is not None and completed.key is not None:
@@ -100,7 +101,7 @@ class OrderCardTracker:
                         order
                         for order in orders
                         if order.key is not None
-                        and order.stage in TERMINAL
+                        and order.status.active is False
                         and self._fingerprint(order.key) == completion.fingerprint
                     ),
                     None,

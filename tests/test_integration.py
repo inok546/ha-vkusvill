@@ -24,7 +24,7 @@ from custom_components.vkusvill.const import (
     MCP_URL,
 )
 from custom_components.vkusvill.diagnostics import async_get_config_entry_diagnostics
-from custom_components.vkusvill.models import Stage
+from custom_components.vkusvill.models import OrderStatus, Stage
 from custom_components.vkusvill.oauth import AUTHORIZE_URL, TOKEN_URL, refresh_journal
 from custom_components.vkusvill.order_card import card_store
 
@@ -118,8 +118,8 @@ async def test_card_expires_at_sixty_minutes_without_polling(
         models,
         "VERIFIED_STATUSES",
         {
-            "fixture active": Stage.WITH_COURIER,
-            "fixture terminal": terminal_stage,
+            "fixture active": OrderStatus(Stage.WITH_COURIER, True),
+            "fixture terminal": OrderStatus(terminal_stage, False),
         },
     )
     wire.orders([terminal])
@@ -158,7 +158,12 @@ async def test_card_restores_grace_period_and_discards_unobserved_transitions(
     raw_active = "fixture active"
     raw_terminal = "fixture terminal"
     monkeypatch.setattr(
-        models, "VERIFIED_STATUSES", {raw_active: Stage.ASSEMBLING, raw_terminal: Stage.DELIVERED}
+        models,
+        "VERIFIED_STATUSES",
+        {
+            raw_active: OrderStatus(Stage.ASSEMBLING, True),
+            raw_terminal: OrderStatus(Stage.DELIVERED, False),
+        },
     )
     active = {"id_general": "private-order-for-card", "status_name": raw_active}
     terminal = {**active, "status_name": raw_terminal}
@@ -195,14 +200,54 @@ async def test_card_restores_grace_period_and_discards_unobserved_transitions(
     assert await card_store(hass, entry).async_load() is None
 
 
-async def test_last_order_time_uses_all_pages_independent_of_active_order(
-    hass, entry, wire, monkeypatch
+@pytest.mark.parametrize(
+    ("service", "completion_stage"), [("Доставка", Stage.DELIVERED), (None, Stage.OTHER)]
+)
+async def test_reported_delivery_sequence_drives_sensors_and_card(
+    hass, entry, wire, freezer, service, completion_stage
 ):
-    monkeypatch.setattr(models, "VERIFIED_STATUSES", {"fixture active": Stage.ASSEMBLING})
+    previous = {"id": 30, "created_at": 100, "status_name": "Успешно завершен"}
+    current = {"id": 31, "created_at": 200}
+    if service is not None:
+        current["service"] = service
+    wire.orders([previous])
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    assert hass.states.get(CARD_STATUS).state == STATE_UNKNOWN
+    coordinator = entry.runtime_data
+    coordinator.update_interval = None
+
+    for status, stage, courier in (
+        ("Сборка", Stage.ASSEMBLING, "off"),
+        ("Готов", Stage.OTHER, "off"),
+        ("Доставка", Stage.WITH_COURIER, "on"),
+    ):
+        freezer.tick(timedelta(minutes=2))
+        wire.orders([previous, {**current, "status_name": status}])
+        await coordinator.async_refresh()
+        assert hass.states.get(STATUS).state == hass.states.get(CARD_STATUS).state == status
+        assert hass.states.get(STAGE).state == stage
+        assert hass.states.get(ACTIVE_ID).state == "31"
+        assert hass.states.get(ACTIVE).state == "on"
+        assert hass.states.get(COURIER).state == courier
+
+    freezer.tick(timedelta(minutes=2))
+    wire.orders([previous, {**current, "status_name": "Успешно завершен"}])
+    await coordinator.async_refresh()
+    assert hass.states.get(STAGE).state == completion_stage
+    assert hass.states.get(ACTIVE_ID).state == STATE_UNKNOWN
+    assert hass.states.get(ACTIVE).state == hass.states.get(COURIER).state == "off"
+    assert hass.states.get(CARD_STATUS).state == "Успешно завершен"
+    async_fire_time_changed_exact(
+        hass, coordinator.data.fetched_at + timedelta(minutes=60, seconds=1)
+    )
+    assert hass.states.get(CARD_STATUS).state == STATE_UNKNOWN
+
+
+async def test_last_order_time_uses_all_pages_independent_of_active_order(hass, entry, wire):
     active_time = "2026-11-17T21:00:00+00:00"
     latest_time = "2026-11-18T18:00:00+00:00"
     wire.orders(
-        [{"id": 20, "created_at": active_time, "status_name": "fixture active"}],
+        [{"id": 20, "created_at": active_time, "status_name": "Сборка"}],
         has_more=True,
     )
     wire.orders(

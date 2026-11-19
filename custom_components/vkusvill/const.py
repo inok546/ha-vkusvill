@@ -2,7 +2,7 @@
 
 DOMAIN = "vkusvill"
 NAME = "ВкусВилл"
-VERSION = "0.3.0"
+VERSION = "0.3.1"
 
 MCP_URL = "https://mcp.vkusvill.ru/mcp"
 MCP_ORIGIN = "https://mcp.vkusvill.ru"

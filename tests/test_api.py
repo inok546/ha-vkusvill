@@ -21,7 +21,7 @@ from custom_components.vkusvill.http import (
     ToolError,
     retry_after,
 )
-from custom_components.vkusvill.models import Order, OrderHistory, Stage, select_orders
+from custom_components.vkusvill.models import Order, OrderHistory, OrderStatus, Stage, select_orders
 from custom_components.vkusvill.oauth import Credentials, Token
 
 from .conftest import Response
@@ -86,12 +86,9 @@ def test_protocol_failures(envelope, error):
     assert "private" not in str(raised.value)
 
 
-async def test_page_requests_and_later_order(client, wire, monkeypatch):
-    monkeypatch.setattr(models, "VERIFIED_STATUSES", {"fixture active": Stage.ASSEMBLING})
+async def test_page_requests_and_later_order(client, wire):
     wire.orders([{"id": 1, "created_at": 1000, "status_name": "unrecognized"}], has_more=True)
-    wire.orders(
-        [{"id": 2, "created_at": 900, "status_name": "fixture active"}], page=2, has_more=False
-    )
+    wire.orders([{"id": 2, "created_at": 900, "status_name": "Сборка"}], page=2, has_more=False)
     result = await client.get_history()
     assert wire.pages == [1, 2]
     assert result.complete
@@ -197,10 +194,10 @@ def test_status_semantics(monkeypatch):
         models,
         "VERIFIED_STATUSES",
         {
-            "fixture delivered": Stage.DELIVERED,
-            "fixture cancelled": Stage.CANCELLED,
-            "fixture assembling": Stage.ASSEMBLING,
-            "fixture courier": Stage.WITH_COURIER,
+            "fixture delivered": OrderStatus(Stage.DELIVERED, False),
+            "fixture cancelled": OrderStatus(Stage.CANCELLED, False),
+            "fixture assembling": OrderStatus(Stage.ASSEMBLING, True),
+            "fixture courier": OrderStatus(Stage.WITH_COURIER, True),
         },
     )
     unknown = Order("5", "5", "Статус неизвестен", now)
@@ -224,8 +221,20 @@ def test_status_semantics(monkeypatch):
 
 
 def test_production_mapping_does_not_guess():
-    for raw in ("Доставлен", "Отменён", "У курьера", "Собирается", "Успешно завершен", None):
-        assert Order("1", "1", raw, None).stage == Stage.UNKNOWN
+    for raw in ("Доставлен", "Отменён", "У курьера", "Собирается", "Успешно завершён", None):
+        order = Order("1", "1", raw, None)
+        assert order.stage == Stage.UNKNOWN
+        assert order.status.active is None
+
+
+@pytest.mark.parametrize(
+    ("service", "expected"),
+    [("Доставка", Stage.DELIVERED), ("Самовывоз", Stage.OTHER), (None, Stage.OTHER)],
+)
+def test_completed_status_uses_provider_service(service, expected):
+    page = parse_page({"items": [{"status_name": "Успешно завершен", "service": service}]}, 1)
+    assert page.items[0].stage == expected
+    assert page.items[0].status.active is False
 
 
 @pytest.mark.parametrize(

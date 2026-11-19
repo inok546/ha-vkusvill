@@ -17,10 +17,23 @@ class Stage(StrEnum):
     UNKNOWN = "unknown"
 
 
+@dataclass(frozen=True)
+class OrderStatus:
+    """Normalized stage and activity evidenced by the provider's status."""
+
+    stage: Stage
+    active: bool | None
+    delivery_stage: Stage | None = None
+
+
 # Add exact values only with a source in docs/API_FINDINGS.md.
-VERIFIED_STATUSES: Mapping[str, Stage] = {}
-ACTIVE = {Stage.ASSEMBLING, Stage.WITH_COURIER}
-TERMINAL = {Stage.DELIVERED, Stage.CANCELLED}
+VERIFIED_STATUSES: Mapping[str, OrderStatus] = {
+    "Сборка": OrderStatus(Stage.ASSEMBLING, True),
+    "Готов": OrderStatus(Stage.OTHER, True),
+    "Доставка": OrderStatus(Stage.WITH_COURIER, True),
+    "Успешно завершен": OrderStatus(Stage.OTHER, False, delivery_stage=Stage.DELIVERED),
+}
+UNKNOWN_STATUS = OrderStatus(Stage.UNKNOWN, None)
 
 
 @dataclass(frozen=True)
@@ -31,15 +44,24 @@ class Order:
     number: str | None
     status_name: str | None
     created_at: datetime | None
+    is_delivery: bool = False
+
+    @property
+    def status(self) -> OrderStatus:
+        """Look up the exact status reported by MCP."""
+        return (
+            VERIFIED_STATUSES.get(self.status_name, UNKNOWN_STATUS)
+            if self.status_name
+            else UNKNOWN_STATUS
+        )
 
     @property
     def stage(self) -> Stage:
         """Classify an exact, verified status."""
-        return (
-            VERIFIED_STATUSES.get(self.status_name, Stage.UNKNOWN)
-            if self.status_name
-            else Stage.UNKNOWN
-        )
+        status = self.status
+        if self.is_delivery and status.delivery_stage is not None:
+            return status.delivery_stage
+        return status.stage
 
 
 @dataclass(frozen=True)
@@ -93,11 +115,11 @@ def newest_order(orders: Iterable[Order]) -> Order | None:
 def select_orders(history: OrderHistory, fetched_at: datetime) -> OrderSnapshot:
     """Prefer the newest verified active order, falling back to history."""
     orders = history.orders
-    active = newest_order(order for order in orders if order.stage in ACTIVE)
+    active = newest_order(order for order in orders if order.status.active is True)
     has_active = None
     if active is not None:
         has_active = True
-    elif history.complete and orders and all(order.stage in TERMINAL for order in orders):
+    elif history.complete and orders and all(order.status.active is False for order in orders):
         has_active = False
     latest = newest_order(orders)
     return OrderSnapshot(

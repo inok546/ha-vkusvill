@@ -143,7 +143,15 @@ def parse_page(envelope: dict[str, Any], rpc_id: int, sensitive: tuple[str, ...]
         number = _identifier(item.get("id_general"), sensitive)
         status = _status(item.get("status_name"), sensitive)
         created_at = _created_at(item.get("created_at"))
-        orders.append(Order(order_id or number, number or order_id, status, created_at))
+        orders.append(
+            Order(
+                order_id or number,
+                number or order_id,
+                status,
+                created_at,
+                is_delivery=item.get("service") == "Доставка",
+            )
+        )
     return OrderPage(tuple(orders), has_more)
 
 
