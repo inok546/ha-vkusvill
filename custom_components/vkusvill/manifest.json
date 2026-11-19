@@ -1,0 +1,11 @@
+{
+  "domain": "vkusvill",
+  "name": "ВкусВилл",
+  "codeowners": ["@inok546"],
+  "config_flow": true,
+  "documentation": "https://github.com/inok546/ha-vkusvill#readme",
+  "integration_type": "service",
+  "iot_class": "cloud_polling",
+  "issue_tracker": "https://github.com/inok546/ha-vkusvill/issues",
+  "version": "0.1.0"
+}

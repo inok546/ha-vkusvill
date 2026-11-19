@@ -1,0 +1,80 @@
+{
+  "title": "VkusVill",
+  "config": {
+    "step": {
+      "user": {
+        "title": "Register a VkusVill application",
+        "description": "Create a personal client on the [VkusVill registration page]({registration_url}). Choose “My service has no public URI” and verify that the registered address is `{redirect_uri}`. Enable purchase history and access renewal. Enter the credentials from VkusVill.",
+        "data": {
+          "client_id": "OAuth client ID",
+          "client_secret": "OAuth client secret"
+        }
+      },
+      "callback": {
+        "title": "Authorize VkusVill",
+        "description": "[Sign in to VkusVill]({authorize_url}) in the browser within five minutes. After consent, the browser returns to `{redirect_uri}` and may show a connection error. Paste the full address from the browser into this Home Assistant form and close the browser tab. Keep the address private.",
+        "data": {
+          "callback_url": "Full callback address"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Reconnect the VkusVill application",
+        "description": "Verify purchase history and access renewal in the [VkusVill client settings]({registration_url}). This flow uses `{redirect_uri}`. If VkusVill replaced the client secret, enter the new one.",
+        "data": {
+          "client_secret": "New OAuth client secret (optional)"
+        }
+      }
+    },
+    "error": {
+      "invalid_credentials": "Check the OAuth client ID and secret from VkusVill.",
+      "invalid_callback": "Paste the full callback address from this authorization attempt.",
+      "discovery_failed": "Could not verify VkusVill's OAuth server. Check connectivity and try again.",
+      "rate_limited": "VkusVill has requested a pause. Try again later."
+    },
+    "abort": {
+      "already_configured": "VkusVill is already configured.",
+      "already_in_progress": "An authorization attempt is already in progress.",
+      "access_denied": "Authorization was declined on VkusVill.",
+      "expired": "The authorization attempt expired. Start setup or reauthentication again.",
+      "invalid_scope": "VkusVill did not grant the required purchase history or access renewal permission. Check your application settings.",
+      "authorization_failed": "VkusVill did not issue a usable grant. Check the registered callback, credentials and access renewal permission.",
+      "connection_failed": "VkusVill did not return usable OAuth or order history data. Try again from setup.",
+      "provider_error": "VkusVill could not finish authorization. Check the callback address and OAuth application settings.",
+      "rate_limited": "VkusVill has requested a pause. Try again later.",
+      "reauth_successful": "VkusVill authorization renewed."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "VkusVill polling",
+        "data": {
+          "scan_interval": "Polling interval in seconds (60–3600)"
+        }
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "order_status": {"name": "Order status"},
+      "order_stage": {
+        "name": "Order stage",
+        "state": {
+          "assembling": "Assembling",
+          "with_courier": "With courier",
+          "delivered": "Delivered",
+          "cancelled": "Cancelled",
+          "other": "Other",
+          "unknown": "Unrecognized status"
+        }
+      },
+      "order_id": {"name": "Selected order number"},
+      "active_order_id": {"name": "Active order number"},
+      "last_successful_update": {"name": "Last successful update"}
+    },
+    "binary_sensor": {
+      "active_order": {"name": "Active order"},
+      "courier": {"name": "Order with courier"}
+    }
+  }
+}
